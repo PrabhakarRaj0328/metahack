@@ -172,3 +172,11 @@ def root():
         },
         "tasks": ["task_easy", "task_medium", "task_hard"],
     }
+
+
+def start():
+    """Entry point for [project.scripts] server = 'app.main:start'"""
+    import uvicorn
+    import os
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("app.main:app", host="0.0.0.0", port=port, workers=1)
