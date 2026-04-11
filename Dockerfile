@@ -30,14 +30,14 @@ USER envuser
 ENV API_BASE_URL="https://api.openai.com/v1"
 ENV MODEL_NAME="gpt-4o-mini"
 ENV HF_TOKEN=""
-ENV ENV_BASE_URL="http://localhost:8000"
-ENV PORT=8000
+ENV ENV_BASE_URL="http://localhost:7860"
+ENV PORT=7860
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
-EXPOSE 8000
+EXPOSE 7860
 
 # Start the FastAPI server
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 1"]
