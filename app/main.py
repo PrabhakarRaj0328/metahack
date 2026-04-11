@@ -66,22 +66,26 @@ def health():
 
 
 @app.post("/reset", response_model=ResetResponse)
-def reset(request: ResetRequest):
+def reset(request: Optional[ResetRequest] = None):
     """
     Reset the environment and return the first email observation.
-    task_id must be one of: task_easy, task_medium, task_hard
+    task_id must be one of: task_easy, task_medium, task_hard.
+    Body is optional — omitting it defaults to task_easy.
     """
+    # Accept POST /reset with no body, empty body, or {"task_id": "..."}
+    task_id = (request.task_id if request is not None else None) or "task_easy"
+
     with _lock:
         try:
-            obs = _episode.reset(task_id=request.task_id)
+            obs = _episode.reset(task_id=task_id)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
     return ResetResponse(
         observation=obs,
-        task_id=request.task_id,
-        total_emails=len(TASK_EMAILS[request.task_id]),
-        message=f"Episode reset for task '{request.task_id}'. Triage {len(TASK_EMAILS[request.task_id])} emails.",
+        task_id=task_id,
+        total_emails=len(TASK_EMAILS[task_id]),
+        message=f"Episode reset for task '{task_id}'. Triage {len(TASK_EMAILS[task_id])} emails.",
     )
 
 
