@@ -1,7 +1,16 @@
 """
-server/app.py — OpenEnv required entry point.
-Imports and re-exports the FastAPI app for multi-mode deployment.
+server/app.py — OpenEnv required entry point for multi-mode deployment.
 """
-from app.main import app, main  # noqa: F401
+import os
+import uvicorn
+from app.main import app  # noqa: F401
 
-__all__ = ["app", "main"]
+
+def main():
+    """Main entry point. Must be named main() and guarded by __name__ == '__main__'."""
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("app.main:app", host="0.0.0.0", port=port, workers=1)
+
+
+if __name__ == "__main__":
+    main()
