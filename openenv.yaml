@@ -1,0 +1,102 @@
+name: email-triage-env
+version: "1.0.0"
+description: >
+  A real-world email triage environment where an AI agent reads incoming emails
+  and must classify priority, assign category, draft a reply, and decide on
+  routing/action — mimicking the daily inbox management task performed by
+  knowledge workers, customer support agents, and executive assistants.
+author: openenv-submission
+tags:
+  - openenv
+  - email
+  - triage
+  - nlp
+  - real-world
+  - customer-support
+  - productivity
+
+api:
+  base_url: http://localhost:8000
+  endpoints:
+    reset: POST /reset
+    step: POST /step
+    state: GET /state
+    tasks: GET /tasks
+
+observation_space:
+  type: object
+  description: Current email in the inbox plus context
+  fields:
+    email_id: string
+    subject: string
+    sender: string
+    sender_domain: string
+    body: string
+    timestamp: string
+    thread_length: integer
+    has_attachments: boolean
+    inbox_position: integer
+    total_emails: integer
+    step_count: integer
+    done: boolean
+
+action_space:
+  type: object
+  description: Agent decision on how to handle the current email
+  fields:
+    priority:
+      type: string
+      enum: [urgent, high, normal, low, spam]
+      description: Priority classification for this email
+    category:
+      type: string
+      enum: [support, billing, sales, internal, legal, hr, it, complaint, inquiry, spam, other]
+      description: Topic/department category
+    action:
+      type: string
+      enum: [reply, forward, archive, delete, escalate, flag, snooze]
+      description: What to do with this email
+    reply_draft:
+      type: string
+      description: Draft reply text (required when action=reply, optional otherwise)
+    forward_to:
+      type: string
+      description: Email address to forward to (required when action=forward/escalate)
+    tags:
+      type: array
+      items: string
+      description: Optional free-form tags to apply
+
+tasks:
+  - id: task_easy
+    name: Priority Classification
+    difficulty: easy
+    description: >
+      Correctly classify the priority (urgent/high/normal/low/spam) of 10 emails.
+      Grader measures exact-match accuracy with partial credit for adjacent priorities.
+    max_steps: 15
+    reward_range: [0.0, 1.0]
+
+  - id: task_medium
+    name: Triage and Routing
+    difficulty: medium
+    description: >
+      Classify priority AND category AND choose the correct action (reply/forward/archive/
+      escalate/delete) for 10 mixed emails. Partial credit across all three dimensions.
+    max_steps: 15
+    reward_range: [0.0, 1.0]
+
+  - id: task_hard
+    name: Full Inbox Management
+    difficulty: hard
+    description: >
+      Handle a realistic inbox of 15 emails: correct triage + appropriate reply drafting
+      where required. Reply quality is graded on tone, completeness, and accuracy.
+      Includes tricky cases: ambiguous priority, phishing detection, legal sensitivity flags.
+    max_steps: 20
+    reward_range: [0.0, 1.0]
+
+baseline_scores:
+  task_easy: 0.72
+  task_medium: 0.58
+  task_hard: 0.41
