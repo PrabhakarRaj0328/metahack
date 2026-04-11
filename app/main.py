@@ -174,8 +174,8 @@ def root():
     }
 
 
-def start():
-    """Entry point for [project.scripts] server = 'app.main:start'"""
+def main():
+    """Entry point for [project.scripts] server = 'app.main:main'"""
     import uvicorn
     import os
     port = int(os.environ.get("PORT", 8000))

@@ -28,4 +28,4 @@ where = ["."]
 include = ["app*", "data*"]
 
 [project.scripts]
-server = "app.main:start"
+server = "app.main:main"
