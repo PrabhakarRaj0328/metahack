@@ -22,23 +22,38 @@ import time
 from typing import Any, Dict, Optional
 
 import requests
-from openai import OpenAI
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration — read at module level but client created lazily in main()
 # ---------------------------------------------------------------------------
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME   = os.environ.get("MODEL_NAME", "gpt-4o-mini")
-HF_TOKEN     = os.environ.get("HF_TOKEN", "")
-ENV_BASE_URL = os.environ.get("ENV_BASE_URL", "http://localhost:8000")
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
+MODEL_NAME   = os.environ.get("MODEL_NAME", "gpt-4o-mini").strip()
+HF_TOKEN     = os.environ.get("HF_TOKEN", "").strip()
+ENV_BASE_URL = os.environ.get("ENV_BASE_URL", "http://localhost:8000").strip().rstrip("/")
 
 TASKS = ["task_easy", "task_medium", "task_hard"]
 MAX_RETRIES = 3
 
-# ---------------------------------------------------------------------------
-# OpenAI client (OpenAI-compatible)
-# ---------------------------------------------------------------------------
-client = OpenAI(api_key=HF_TOKEN or "sk-placeholder", base_url=API_BASE_URL)
+# Client is created lazily inside main() to avoid crashing at import time
+_client = None
+
+
+def get_client():
+    """Create OpenAI client lazily — never at module level."""
+    global _client
+    if _client is not None:
+        return _client
+    try:
+        from openai import OpenAI
+        api_key = HF_TOKEN if HF_TOKEN else "sk-placeholder"
+        kwargs = {"api_key": api_key}
+        if API_BASE_URL:
+            kwargs["base_url"] = API_BASE_URL
+        _client = OpenAI(**kwargs)
+        return _client
+    except Exception as e:
+        print(json.dumps({"type": "ERROR", "message": f"Failed to create OpenAI client: {e}"}), flush=True)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +78,7 @@ def env_state() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Agent prompt builder
+# Agent prompt
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = """You are an expert email triage assistant. For each email you receive,
 you must output a JSON object with EXACTLY these fields:
@@ -78,13 +93,11 @@ you must output a JSON object with EXACTLY these fields:
 }
 
 Guidelines:
-- priority: urgent=needs action NOW (outages, legal threats, security). high=today. normal=this week. low=FYI. spam=junk/phishing.
-- category: pick the best-fit department or topic.
-- action: reply=you draft a response. escalate=needs a senior person/legal/HR immediately. forward=send to another team. archive=save but no action. delete=spam/junk.
-- reply_draft: REQUIRED when action=reply. Write a professional, concise reply addressing the sender's needs. Null otherwise.
-- forward_to: include a team/person when action=forward or escalate (e.g. "legal@company.com", "IT Help Desk").
+- priority: urgent=needs action NOW. high=today. normal=this week. low=FYI. spam=junk/phishing.
+- action: reply=draft a response. escalate=needs senior/legal/HR. forward=send to another team. archive=save, no action. delete=spam/junk.
+- reply_draft: REQUIRED when action=reply. Write a professional, concise reply. Null otherwise.
 - NEVER reply to spam or phishing emails.
-- Legal threats, data breaches, harassment complaints, and media inquiries must ALWAYS be escalated.
+- Legal threats, data breaches, harassment complaints, media inquiries must ALWAYS be escalated.
 
 Output ONLY valid JSON. No prose, no markdown fences."""
 
@@ -106,10 +119,21 @@ Respond with JSON only."""
 
 
 # ---------------------------------------------------------------------------
-# LLM call with retry
+# LLM call with retry and safe fallback
 # ---------------------------------------------------------------------------
-def call_llm(user_prompt: str, retries: int = MAX_RETRIES) -> Dict[str, Any]:
-    for attempt in range(retries):
+FALLBACK_ACTION = {
+    "priority": "normal",
+    "category": "other",
+    "action": "archive",
+    "reply_draft": None,
+    "forward_to": None,
+    "tags": [],
+}
+
+
+def call_llm(user_prompt: str) -> Dict[str, Any]:
+    client = get_client()
+    for attempt in range(MAX_RETRIES):
         try:
             response = client.chat.completions.create(
                 model=MODEL_NAME,
@@ -126,23 +150,17 @@ def call_llm(user_prompt: str, retries: int = MAX_RETRIES) -> Dict[str, Any]:
                 raw = raw.split("```")[1]
                 if raw.startswith("json"):
                     raw = raw[4:]
-            return json.loads(raw)
+            return json.loads(raw.strip())
         except json.JSONDecodeError:
-            if attempt == retries - 1:
-                # Return a safe fallback action
-                return {
-                    "priority": "normal",
-                    "category": "other",
-                    "action": "archive",
-                    "reply_draft": None,
-                    "forward_to": None,
-                    "tags": [],
-                }
+            if attempt == MAX_RETRIES - 1:
+                return dict(FALLBACK_ACTION)
             time.sleep(1)
         except Exception as e:
-            if attempt == retries - 1:
-                raise
+            if attempt == MAX_RETRIES - 1:
+                print(json.dumps({"type": "STEP", "event": "llm_error", "error": str(e)}), flush=True)
+                return dict(FALLBACK_ACTION)
             time.sleep(2 ** attempt)
+    return dict(FALLBACK_ACTION)
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +182,7 @@ def run_task(task_id: str) -> Dict[str, Any]:
         action = call_llm(user_prompt)
         latency = round(time.time() - t0, 3)
 
-        # Ensure required fields present
+        # Ensure all required fields present
         action.setdefault("priority", "normal")
         action.setdefault("category", "other")
         action.setdefault("action", "archive")
@@ -173,7 +191,6 @@ def run_task(task_id: str) -> Dict[str, Any]:
         action.setdefault("tags", [])
 
         step_data = env_step(action)
-
         reward_info = step_data["reward"]
         step_reward = reward_info["reward"]
         episode_done = step_data["done"]
@@ -186,26 +203,24 @@ def run_task(task_id: str) -> Dict[str, Any]:
             "reward": step_reward,
             "priority_score": reward_info.get("priority_score"),
             "category_score": reward_info.get("category_score"),
-            "action_score": reward_info.get("action_score"),
-            "reply_score": reward_info.get("reply_score"),
-            "feedback": reward_info.get("feedback"),
-            "penalties": reward_info.get("penalties", []),
+            "action_score":   reward_info.get("action_score"),
+            "reply_score":    reward_info.get("reply_score"),
+            "feedback":       reward_info.get("feedback"),
+            "penalties":      reward_info.get("penalties", []),
             "done": episode_done,
             "latency_s": latency,
         }
         step_results.append(step_record)
 
-        # Emit [STEP] log
         print(json.dumps({"type": "STEP", **step_record}), flush=True)
 
         if not episode_done:
             obs = step_data["observation"]
 
-    # Final state
     final_state = env_state()
     total_reward = final_state["cumulative_reward"]
-    num_emails = final_state["total_emails"]
-    mean_reward = round(total_reward / max(num_emails, 1), 4)
+    num_emails   = final_state["total_emails"]
+    mean_reward  = round(total_reward / max(num_emails, 1), 4)
 
     return {
         "task_id": task_id,
@@ -223,15 +238,13 @@ def run_task(task_id: str) -> Dict[str, Any]:
 def main():
     start_time = time.time()
 
-    # Verify env is up
+    # Verify env is reachable
     try:
         r = requests.get(f"{ENV_BASE_URL}/health", timeout=10)
         r.raise_for_status()
     except Exception as e:
-        print(json.dumps({"type": "ERROR", "message": f"Environment not reachable: {e}"}))
+        print(json.dumps({"type": "ERROR", "message": f"Environment not reachable at {ENV_BASE_URL}: {e}"}), flush=True)
         sys.exit(1)
-
-    all_results = {}
 
     # Emit [START]
     print(json.dumps({
@@ -243,9 +256,18 @@ def main():
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }), flush=True)
 
+    all_results = {}
+
     for task_id in TASKS:
         print(json.dumps({"type": "STEP", "task_id": task_id, "step": 0, "event": "task_start"}), flush=True)
-        task_result = run_task(task_id)
+        try:
+            task_result = run_task(task_id)
+        except Exception as e:
+            print(json.dumps({"type": "STEP", "task_id": task_id, "step": 0,
+                              "event": "task_error", "error": str(e)}), flush=True)
+            all_results[task_id] = {"score": 0.0, "cumulative_reward": 0.0, "total_steps": 0}
+            continue
+
         all_results[task_id] = {
             "score": task_result["mean_reward_per_email"],
             "cumulative_reward": task_result["cumulative_reward"],
@@ -261,7 +283,7 @@ def main():
 
     elapsed = round(time.time() - start_time, 2)
     overall_mean = round(
-        sum(v["score"] for v in all_results.values()) / len(all_results), 4
+        sum(v["score"] for v in all_results.values()) / max(len(all_results), 1), 4
     )
 
     # Emit [END]
